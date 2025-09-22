@@ -46,6 +46,18 @@ ENV NODE_ENV=production
 # Enable pnpm and build
 RUN corepack enable pnpm && pnpm run build
 
+# Set Node.js memory limit to prevent SIGKILL
+ENV NODE_OPTIONS="--max-old-space-size=1024"
+
+# Optional: skip fetching fonts from Google Fonts (preload or use next/font)
+# Example using local font folder (adjust path if needed)
+# COPY ./fonts /app/public/fonts
+# Update your CSS to use /fonts/Quicksand-*.woff2
+
+# Build your Next.js app
+RUN pnpm install --frozen-lockfile
+RUN pnpm run build
+
 # Production image, copy all the files and run next
 FROM base AS runner
 WORKDIR /app
