@@ -1,87 +1,78 @@
+# --------- Base stage ---------
 FROM node:lts-alpine AS base
+
 WORKDIR /app
 
-# Inject commit SHA at build time (from OpenShift BUILD_COMMIT)
-ARG COMMIT_SHA=unknown
-ENV COMMIT_SHA=$COMMIT_SHA
+# Install basic tools
+RUN apk add --no-cache libc6-compat git bash
 
-# ---------
-# Install dependencies only when needed
-FROM base AS deps
-
-# Install libc6-compat for better compatibility and git for version info
-RUN apk add --no-cache libc6-compat git
-
-# Enable corepack early for better caching
+# Enable corepack for pnpm
 RUN corepack enable
 
-# Copy dependency files, Prisma schema, and postinstall script
+# --------- Dependencies stage ---------
+FROM base AS deps
+
+# Copy package files and Prisma schema
 COPY package.json pnpm-lock.yaml* postinstall.js ./
 COPY prisma ./prisma
 
-# Install pnpm and dependencies with cache mount for faster builds
+# Install dependencies with caching
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     --mount=type=cache,target=/root/.cache/pnpm \
-    corepack enable pnpm && pnpm i --frozen-lockfile --prefer-offline
+    corepack enable pnpm && pnpm install --frozen-lockfile --prefer-offline
 
-# Copy remaining setup scripts
+# Copy runtime scripts
 COPY migrate-and-start.sh setup-database.js initialize.js ./
 
-# ---------
-# Rebuild the source code only when needed
+# --------- Builder stage ---------
 FROM base AS builder
 
-# Install git for version info
-RUN apk add --no-cache git
+WORKDIR /app
 
-# Copy node_modules and Prisma files from deps stage
+# Copy dependencies and Prisma from deps stage
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/prisma ./prisma
 
 # Copy source code
 COPY . .
 
-# Set environment variables for build
-ENV SKIP_ENV_VALIDATION=true
-ENV NODE_ENV=production
-# Set Node.js memory limit to prevent SIGKILL
-ENV NODE_OPTIONS="--max-old-space-size=2048"
+# Provide COMMIT_SHA as build arg
+ARG COMMIT_SHA=unknown
+ENV COMMIT_SHA=$COMMIT_SHA
 
-# Build your Next.js app
+# Production environment
+ENV NODE_ENV=production
+ENV SKIP_ENV_VALIDATION=true
+ENV NODE_OPTIONS="--max-old-space-size=1024"
+
+# Build Next.js app
 RUN corepack enable pnpm && pnpm run build
 
-# ---------
-# Production image
-FROM base AS runner
+# --------- Runner stage ---------
+FROM node:lts-alpine AS runner
+
 WORKDIR /app
 
-# Set production environment variables
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
-ENV PORT=3000
-
-# Create user and group in a single layer
+# Create non-root user
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
-# Copy public assets
-COPY --from=builder /app/public ./public
-
-# Create .next directory with correct permissions
-RUN mkdir .next && chown nextjs:nodejs .next
-
-# Copy built application with correct permissions
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./ 
+# Copy built app
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-# Copy runtime scripts and database schema
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /app/initialize.js ./ 
 COPY --from=builder --chown=nextjs:nodejs /app/setup-database.js ./ 
 COPY --from=builder --chown=nextjs:nodejs /app/migrate-and-start.sh ./ 
-COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 
 # Switch to non-root user
 USER nextjs
+
+# Set environment
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
 
 EXPOSE 3000
 
