@@ -1,12 +1,16 @@
 FROM node:lts-alpine AS base
+WORKDIR /app
 
+# Inject commit SHA at build time (from OpenShift BUILD_COMMIT)
+ARG COMMIT_SHA=unknown
+ENV COMMIT_SHA=$COMMIT_SHA
+
+# ---------
 # Install dependencies only when needed
 FROM base AS deps
 
 # Install libc6-compat for better compatibility and git for version info
 RUN apk add --no-cache libc6-compat git
-
-WORKDIR /app
 
 # Enable corepack early for better caching
 RUN corepack enable
@@ -24,10 +28,8 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 COPY migrate-and-start.sh setup-database.js initialize.js ./
 
 # ---------
-
 # Rebuild the source code only when needed
 FROM base AS builder
-WORKDIR /app
 
 # Install git for version info
 RUN apk add --no-cache git
@@ -39,26 +41,17 @@ COPY --from=deps /app/prisma ./prisma
 # Copy source code
 COPY . .
 
-# Set environment variables for build - they are provided at runtime
+# Set environment variables for build
 ENV SKIP_ENV_VALIDATION=true
 ENV NODE_ENV=production
-
-# Enable pnpm and build
-RUN corepack enable pnpm && pnpm run build
-
 # Set Node.js memory limit to prevent SIGKILL
-ENV NODE_OPTIONS="--max-old-space-size=1024"
-
-# Optional: skip fetching fonts from Google Fonts (preload or use next/font)
-# Example using local font folder (adjust path if needed)
-# COPY ./fonts /app/public/fonts
-# Update your CSS to use /fonts/Quicksand-*.woff2
+ENV NODE_OPTIONS="--max-old-space-size=2048"
 
 # Build your Next.js app
-RUN pnpm install --frozen-lockfile
-RUN pnpm run build
+RUN corepack enable pnpm && pnpm run build
 
-# Production image, copy all the files and run next
+# ---------
+# Production image
 FROM base AS runner
 WORKDIR /app
 
@@ -78,13 +71,13 @@ COPY --from=builder /app/public ./public
 RUN mkdir .next && chown nextjs:nodejs .next
 
 # Copy built application with correct permissions
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./ 
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 # Copy runtime scripts and database schema
-COPY --from=builder --chown=nextjs:nodejs /app/initialize.js ./
-COPY --from=builder --chown=nextjs:nodejs /app/setup-database.js ./
-COPY --from=builder --chown=nextjs:nodejs /app/migrate-and-start.sh ./
+COPY --from=builder --chown=nextjs:nodejs /app/initialize.js ./ 
+COPY --from=builder --chown=nextjs:nodejs /app/setup-database.js ./ 
+COPY --from=builder --chown=nextjs:nodejs /app/migrate-and-start.sh ./ 
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 
 # Switch to non-root user
@@ -92,5 +85,4 @@ USER nextjs
 
 EXPOSE 3000
 
-# Use exec form for better signal handling
 CMD ["sh", "migrate-and-start.sh"]
