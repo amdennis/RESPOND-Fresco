@@ -1,77 +1,42 @@
-# ---------------------
-# Base image
-# ---------------------
+# Stage 1: Base image
 FROM node:lts-alpine AS base
 
-# Set environment variables (can be overridden in OpenShift)
-ENV PUBLIC_URL="" \
-    POSTGRES_PRISMA_URL="" \
-    POSTGRES_URL_NON_POOLING="" \
-    POSTGRES_PASSWORD="" \
-    NODE_OPTIONS="--max-old-space-size=2048"
-
-# Work directory
 WORKDIR /app
-
-# Install required system packages
 RUN apk add --no-cache libc6-compat git bash
-
-# Enable corepack (pnpm comes with it)
 RUN corepack enable
 
-# ---------------------
-# Dependencies stage
-# ---------------------
+# Stage 2: Install dependencies
 FROM base AS deps
-
-WORKDIR /app
-
 COPY package.json pnpm-lock.yaml* postinstall.js ./
 COPY prisma ./prisma
-
 RUN corepack enable pnpm \
     && pnpm install --frozen-lockfile --prefer-offline
 
-# ---------------------
-# Build stage
-# ---------------------
+# Stage 3: Build
 FROM base AS builder
-
-WORKDIR /app
-
-# Inject commit SHA from OpenShift BuildConfig
 ARG COMMIT_SHA=unknown
 ENV COMMIT_SHA=$COMMIT_SHA \
     NEXT_PUBLIC_COMMIT_SHA=$COMMIT_SHA
 
-# Copy node_modules and prisma from deps stage
+# Copy deps
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/prisma ./prisma
-
-# Copy rest of the app
 COPY . .
 
-# Run postinstall before building Next.js
-RUN node postinstall.js \
+# Run postinstall.js (with npx) and build
+RUN corepack enable pnpm \
+    && node postinstall.js \
     && pnpm run build
 
-# ---------------------
-# Runner stage
-# ---------------------
+# Stage 4: Production image
 FROM base AS runner
-
 WORKDIR /app
 
-# Copy built output from builder
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/package.json ./package.json
 
-# Expose port (OpenShift will override if needed)
 EXPOSE 3000
-
-# Run Next.js app
-CMD ["pnpm", "start"]
+CMD ["node", "server.js"]
 
