@@ -17,6 +17,7 @@ FROM base AS builder
 ARG COMMIT_SHA=unknown
 ENV COMMIT_SHA=$COMMIT_SHA \
     NEXT_PUBLIC_COMMIT_SHA=$COMMIT_SHA
+ENV NEXT_COMMIT_HASH=$COMMIT_SHA
 
 # Copy deps
 COPY --from=deps /app/node_modules ./node_modules
